@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+
+<html lang="en-US">
+
+<head>
+  <title>Index</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <script src="https://unpkg.com/htmx.org@1.9.5"></script>
+<style>
+button {
+  margin: 5px;
+}
+.comment {
+  border-bottom: 1px solid black;
+}
+.child-comment {
+  margin: 20px;
+}
+</style>
+</head>
+
+<body>
+{{if .LoggedIn}}
+{{template "home"}}
+{{else}}
+{{template "login"}}
+{{end}}
+</body>
+
+</html>

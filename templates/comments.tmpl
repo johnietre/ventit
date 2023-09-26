@@ -1,0 +1,27 @@
+{{define "comments"}}
+
+<!-- TODO: Show error somewhere -->
+
+{{range .Comments}}
+<div
+  class="comment {{if ne .ParentId 0}}child-comment{{end}}"
+  >
+  <h4>{{.Username}}</h4>
+  <p>{{.Content}}</p>
+  {{if ne .NumChildren 0}}
+  <!-- Show a load button if there are replies (children) -->
+  <button hx-get="/comments?parent_id={{.Id}}" hx-swap="outerHTML">
+    Load Replies
+  </button>
+  {{end}}
+</div>
+{{end}}
+<!-- If NextPage is 0, there is nothing more to load -->
+{{if ne .NextPage 0}}
+<button
+  hx-get="/comments?parent_id={{.ParentId}}&last_id={{.LastId}}&page={{.NextPage}}"
+  hx-swap="outerHTML"
+  >Load More</button>
+{{end}}
+
+{{end}}

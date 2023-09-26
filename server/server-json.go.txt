@@ -1,0 +1,134 @@
+package server
+
+import (
+	"database/sql"
+  "html/template"
+	//"encoding/json"
+	"log"
+	"net/http"
+	"path/filepath"
+	"runtime"
+	"strconv"
+
+	chi "github.com/go-chi/chi/v5"
+	cmtpkg "github.com/johnietre/ventit/comment"
+	userpkg "github.com/johnietre/ventit/user"
+)
+
+var (
+  indexPath string
+)
+
+func init() {
+  _, thisFile, _, _ := runtime.Caller(0)
+  parentDir := filepath.Dir(filepath.Dir(thisFile))
+  indexPath = filepath.Join(parentDir, "index.html")
+}
+
+type handler struct {
+  mux *chi.Mux
+  db *sql.DB
+}
+
+func NewHandler(db *sql.DB) http.Handler {
+  mux := chi.NewRouter()
+  return &handler{mux: mux, db: db}
+}
+
+func (s *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+  s.mux.ServeHTTP(w, r)
+}
+
+func (s *handler) HomeHandler(w http.ResponseWriter, r *http.Request) {
+  http.ServeFile(w, r, indexPath)
+}
+
+func (s *handler) NewUserHandler(w http.ResponseWriter, r *http.Request) {
+  type Request struct {
+    User userpkg.User `json:"user"`
+    Password string `json:"password"`
+  }
+  var req Request
+  user := req.User
+  pwdHash, err := userpkg.HashPassword(req.Password)
+  if err != nil {
+    // TODO
+  }
+  stmt := `INSERT INTO users VALUES (?,?,?,1)`
+  res, err := s.db.Exec(stmt, user.Username, user.Email, pwdHash)
+  if err != nil {
+    // TODO
+  }
+  id, err := res.LastInsertId()
+  if err != nil {
+    // TODO
+  }
+  user.Id = uint64(id)
+  // TODO
+}
+
+func (s *handler) GetUserHandler(w http.ResponseWriter, r *http.Request) {
+}
+
+func (s *handler) DeleteUserHandler(w http.ResponseWriter, r *http.Request) {
+}
+
+func (s *handler) GetCommentsHandler(w http.ResponseWriter, r *http.Request) {
+  var err error
+  vals := r.URL.Query()
+  parentId := uint64(0)
+  if str := vals.Get("parent_id"); str != "" {
+    if parentId, err = strconv.ParseUint(str, 10, 64); err != nil {
+      http.Error(w, "invalid parent_id", http.StatusBadRequest)
+      return
+    }
+  }
+  pageNum := uint64(0)
+  if str := vals.Get("page"); str != "" {
+    if pageNum, err = strconv.ParseUint(str, 10, 64); err != nil {
+      http.Error(w, "invalid page", http.StatusBadRequest)
+      return
+    }
+  }
+  stmt := `
+  SELECT comments.id,users.id,users.username,comments.content,comments.timestamp
+  FROM comments
+  LEFT JOIN users
+  ON comments.user_id = users.id
+  ORDER BY comments.id DESC
+  LIMIT 10
+  OFFSET ?
+  `
+  rows, err := s.db.Query(stmt, pageNum)
+  if err != nil {
+    // TODO: Change based on error returned
+    log.Print("error querying db: ", err)
+    http.Error(w, "Internal server error", http.StatusInternalServerError)
+    return
+  }
+  var comments []cmtpkg.Comment
+  comment := cmtpkg.Comment{ParentId: parentId}
+  for rows.Next() {
+    e := rows.Scan(
+      &comment.Id, &comment.UserId, &comment.Username,
+      &comment.Content, &comment.Timestamp,
+    )
+    if e != nil && err == nil {
+      // Keep only the first encountered error
+      err = e
+      continue
+    }
+    comments = append(comments, comment)
+  }
+  resp := Response{Content: comments}
+  if err != nil {
+    log.Print("error querying db: ", err)
+    resp.Error = "internal server error"
+  }
+  json.NewEncoder(w).Encode(resp)
+}
+
+type Response struct {
+  Content any `json:"content"`
+  Error string `json:"error"`
+}

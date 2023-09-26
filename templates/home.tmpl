@@ -1,0 +1,5 @@
+{{define "home"}}
+<button hx-post="/logout" hx-target="body">Logout</button>
+<div id="comments" hx-get="/comments" hx-trigger="load">
+</div>
+{{end}}
