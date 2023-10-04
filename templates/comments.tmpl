@@ -1,6 +1,11 @@
 {{define "comments"}}
 
 <!-- TODO: Show error somewhere -->
+{{if .Error}}
+{{template "error" .Error}}
+{{end}}
+
+{{with .Data}}
 
 {{range .Comments}}
 <div
@@ -22,6 +27,8 @@
   hx-get="/comments?parent_id={{.ParentId}}&last_id={{.LastId}}&page={{.NextPage}}"
   hx-swap="outerHTML"
   >Load More</button>
+{{end}}
+
 {{end}}
 
 {{end}}

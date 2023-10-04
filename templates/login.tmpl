@@ -1,4 +1,9 @@
 {{define "login"}}
+
+{{with .Error}}
+{{template "error" .}}
+{{end}}
+
 <form hx-post="/login" hx-target="body">
   <div>
     <label>Email:</label>
@@ -13,4 +18,5 @@
   <br>
   <button hx-get="register">Register</button>
 </form>
+
 {{end}}

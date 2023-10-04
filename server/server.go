@@ -1,12 +1,12 @@
 package server
 
-// TODO: Display errors from HTMX
-
 // TODO: Write templates to buffer before to ResponseWriter in order to check
 // for errors and avoid partial writes?
 
 // TODO: Allow functions to be passed in for checking for uniqueness fails.
 // This makes it more composable and aligns with being able to pass in a DB.
+
+// TODO: Validate email
 
 import (
 	"database/sql"
@@ -34,6 +34,10 @@ import (
 const (
   jwtCookieName = "ventit-jwt"
   anonymousUsername = "ANONYMOUS"
+
+  statusISE = http.StatusInternalServerError
+  iseText = "internal server error"
+  statusBR = http.StatusBadRequest
 )
 
 var (
@@ -139,26 +143,34 @@ func (s *handler) LoginHandler(w http.ResponseWriter, r *http.Request) {
   r.ParseForm()
   email, pwd := r.Form.Get("email"), r.Form.Get("password")
   if email == "" || pwd == "" {
-    writeErr(w, r, "bad request", http.StatusBadRequest)
+    if !writeErrJSON(w, r, "invalid credentials", statusBR) {
+      execTmpl(w, "login", newPageData(nil, "invalid credentials"))
+    }
     return
   }
   user, pwdHash, err := s.getUserByEmail(email)
   if err != nil {
     if err == errUserNotExist {
-      writeErr(w, r, "invalid credentials", http.StatusBadRequest)
+      if !writeErrJSON(w, r, "invalid credentials", statusBR) {
+        execTmpl(w, "login", newPageData(nil, "invalid credentials"))
+      }
     } else {
-      writeErr(w, r, "internal server error", http.StatusInternalServerError)
+      if !writeErrJSON(w, r, iseText, statusISE) {
+        execTmpl(w, "login", newPageData(nil, iseText))
+      }
       log.Printf("error getting password hash for %s: %v", email, err)
     }
     return
   }
   if !userpkg.CheckPassword(pwd, pwdHash) {
-    writeErr(w, r, "invalid credentials", http.StatusUnauthorized)
+    if !writeErrJSON(w, r, "invalid credentials", http.StatusUnauthorized) {
+      execTmpl(w, "login", newPageData(nil, "invalid credentials"))
+    }
     return
   }
   tok, err := s.newJWTStr(user.Id)
   if err != nil {
-    handleNewTokErr(w, r, user, err)
+    handleNewTokErr(w, r, user, err, "login")
     return
   }
   setJWTCookie(w, tok)
@@ -198,7 +210,9 @@ func (s *handler) RegisterHandler(w http.ResponseWriter, r *http.Request) {
 func (s *handler) LogoutHandler(w http.ResponseWriter, r *http.Request) {
   _, ok := userIdFromJWT(r)
   if !ok {
-    writeErr(w, r, "unauthorized", http.StatusUnauthorized)
+    if !writeErrJSON(w, r, "unauthorized", http.StatusUnauthorized) {
+      execTmpl(w, "redirect_login", newPageData(nil, "unauthorized"))
+    }
     return
   }
   http.SetCookie(
@@ -215,30 +229,27 @@ func (s *handler) LogoutHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *handler) NewUserHandler(w http.ResponseWriter, r *http.Request) {
-  /*
-	type Request struct {
-		User     userpkg.User `json:"user"`
-		Password string       `json:"password"`
-	}
-	var req Request
-	user := req.User
-  username := strings.ToLower(user.Username)
-  */
   r.ParseForm()
   form := r.Form
   username := form.Get("username")
   if username == "" || username == anonymousUsername {
-    writeErr(w, r, "invalid username", http.StatusBadRequest)
+    if !writeErrJSON(w, r, "invalid username", statusBR) {
+      execTmpl(w, "register", newPageData(nil, "invalid username"))
+    }
     return
   }
   email, password := form.Get("email"), form.Get("password")
   if email == "" || password == "" {
-    writeErr(w, r, "invalid credentials", http.StatusBadRequest)
+    if !writeErrJSON(w, r, "invalid credentials", statusBR) {
+      execTmpl(w, "register", newPageData(nil, "invalid credentials"))
+    }
     return
   }
 	pwdHash, err := userpkg.HashPassword(password)
 	if err != nil {
-    writeErr(w, r, "invalid credentials", http.StatusBadRequest)
+    if !writeErrJSON(w, r, "invalid credentials", statusBR) {
+      execTmpl(w, "register", newPageData(nil, "invalid credentials"))
+    }
     return
 	}
   user := userpkg.User{
@@ -247,19 +258,23 @@ func (s *handler) NewUserHandler(w http.ResponseWriter, r *http.Request) {
     Anonymous: form.Get("anonymous") != "",
   }
   if err := s.insertUser(&user, pwdHash); err != nil {
+    status, msg := 0, ""
     if err == errUsernameExists {
-      writeErr(w, r, "username already exists", http.StatusBadRequest)
+      status, msg = statusBR, "username already exists"
     } else if err == errEmailExists {
-      writeErr(w, r, "email already exists", http.StatusBadRequest)
+      status, msg = statusBR, "email already exists"
     } else {
-      writeErr(w, r, "internal server error", http.StatusInternalServerError)
       log.Print(err)
+      status, msg = statusISE, iseText
+    }
+    if !writeErrJSON(w, r, msg, status) {
+      execTmpl(w, "register", newPageData(nil, msg))
     }
     return
   }
   tok, err := s.newJWTStr(user.Id)
   if err != nil {
-    handleNewTokErr(w, r, user, err)
+    handleNewTokErr(w, r, user, err, "register")
     return
   }
   http.SetCookie(
@@ -273,12 +288,14 @@ func (s *handler) NewUserHandler(w http.ResponseWriter, r *http.Request) {
     execTmpl(w, "home", nil)
     return
   }
-  json.NewEncoder(w).Encode(newTokResp(user, tok))
+  newTokResp(user, tok).WriteTo(w)
 }
 
 // Adds the ID to the passed user on success
 func (s *handler) insertUser(user *userpkg.User, pwdHash string) error {
-	stmt := `INSERT INTO users VALUES (?,?,?,1)`
+	const stmt = `INSERT INTO users(
+    username,email,password_hash,anonymous
+  ) VALUES (?,?,?,1)`
 	res, err := s.db.Exec(stmt, user.Username, user.Email, pwdHash)
 	if err != nil {
     if errIsUnique(err) {
@@ -308,20 +325,28 @@ func (s *handler) insertUser(user *userpkg.User, pwdHash string) error {
 func (s *handler) GetUserHandler(w http.ResponseWriter, r *http.Request) {
   userId, ok := userIdFromJWT(r)
   if !ok {
-    writeErr(w, r, "unauthorized", http.StatusUnauthorized)
+    if !writeErrJSON(w, r, "unauthorized", http.StatusUnauthorized) {
+      execTmpl(w, "redirect_login", nil)
+    }
     return
   }
   user, err := s.getUserById(userId, userId)
   if err != nil {
+    status, msg := 0, ""
     if err == errUserNotExist {
-      writeErr(w, r, "user does not exist", http.StatusNotFound)
+      status, msg = http.StatusNotFound, "user does not exist"
     } else {
-      writeErr(w, r, "internal server error", http.StatusInternalServerError)
+      status, msg = statusISE, iseText
+    }
+    if !writeErrJSON(w, r, msg, status) {
+      // TODO
+      execTmpl(w, "error", "not implemented")
     }
     return
   }
   if acceptsHTML(r) {
-    writeErr(w, r, "not implemented", http.StatusNotImplemented)
+    // TODO
+    execTmpl(w, "error", "not implemented")
     return
   }
   json.NewEncoder(w).Encode(newOkResp().withUser(user))
@@ -366,7 +391,9 @@ type CommentsData struct {
 func (s *handler) GetCommentsHandler(w http.ResponseWriter, r *http.Request) {
   userId, ok := userIdFromJWT(r)
   if !ok {
-    writeErr(w, r, "unauthorized", http.StatusUnauthorized)
+    if !writeErrJSON(w, r, "unauthorized", http.StatusUnauthorized) {
+      execTmpl(w, "redirect_login", nil)
+    }
     return
   }
 	var err error
@@ -375,19 +402,25 @@ func (s *handler) GetCommentsHandler(w http.ResponseWriter, r *http.Request) {
 	var parentId, lastId, pageNum uint64
 	if str := vals.Get("parent_id"); str != "" {
 		if parentId, err = strconv.ParseUint(str, 10, 64); err != nil {
-			http.Error(w, "invalid parent_id", http.StatusBadRequest)
+      if !writeErrJSON(w, r, "invalid parent_id", statusBR) {
+        execTmpl(w, "comments", newPageData(nil, "invalid parent_id"))
+      }
 			return
 		}
 	}
 	if str := vals.Get("last_id"); str != "" {
 		if lastId, err = strconv.ParseUint(str, 10, 64); err != nil {
-			http.Error(w, "invalid last_id", http.StatusBadRequest)
+      if !writeErrJSON(w, r, "invalid last_id", statusBR) {
+        execTmpl(w, "comments", newPageData(nil, "invalid last_id"))
+      }
 			return
 		}
 	}
 	if str := vals.Get("page"); str != "" {
 		if pageNum, err = strconv.ParseUint(str, 10, 64); err != nil {
-			http.Error(w, "invalid page", http.StatusBadRequest)
+      if !writeErrJSON(w, r, "invalid page", statusBR) {
+        execTmpl(w, "comments", newPageData(nil, "invalid page"))
+      }
 			return
 		}
 	}
@@ -395,19 +428,18 @@ func (s *handler) GetCommentsHandler(w http.ResponseWriter, r *http.Request) {
   if err != nil {
     log.Print(err)
     if data == nil {
-      writeErr(w, r, "internal server error", http.StatusInternalServerError)
+      if !writeErrJSON(w, r, iseText, statusISE) {
+        execTmpl(w, "comments", newPageData(nil, err.Error()))
+      }
       return
     }
   }
   if acceptsHTML(r) {
-    if err := tmpls.ExecuteTemplate(w, "comments", data); err != nil {
-      log.Print("error executing template: ", err)
-      http.Error(w, "Internal server error", http.StatusInternalServerError)
-    }
+    execTmpl(w, "comments", newPageDataErr(data, err))
     return
   }
   // TODO: What code to send on partial error?
-  json.NewEncoder(w).Encode(newOkResp().withData(data))
+  newOkResp().withData(data).WriteTo(w)
 }
 
 func (s *handler) PostCommentHandler(w http.ResponseWriter, r *http.Request) {
@@ -447,6 +479,7 @@ func (s *handler) getCommentsData(
 		// TODO: Change based on error returned
 		return nil, fmt.Errorf("error querying db: %v", err)
 	}
+  defer rows.Close()
 	data := &CommentsData{ParentId: parentId, LastId: lastId}
 
 	comment := cmtpkg.Comment{ParentId: parentId}
@@ -472,7 +505,7 @@ func (s *handler) getCommentsData(
 	}
 	if err != nil {
 		err = fmt.Errorf("error querying db: %v", err)
-    data.Error = "internal server error"
+    data.Error = iseText
 	} else if len(data.Comments) != 0 {
 		data.NextPage = pageNum + 1
 	}
@@ -521,10 +554,14 @@ func userIdFromJWT(r *http.Request) (uint64, bool) {
   return id, true
 }
 
+// TODO
 func handleNewTokErr(
   w http.ResponseWriter, r *http.Request, user userpkg.User, err error,
+  tmplName string,
 ) {
-  writeErr(w, r, "internal server error", http.StatusInternalServerError)
+  if !writeErrJSON(w, r, iseText, statusISE) {
+    execTmpl(w, tmplName, newPageData(nil, iseText))
+  }
   log.Printf(
     "error creating JWT for %s (username: %s): %v",
     user.Email, user.Username, err,
@@ -540,7 +577,9 @@ func writeErr(
   msg string, status int,
 ) {
   if acceptsHTML(r) {
-    http.Error(w, msg, status)
+    //http.Error(w, msg, status)
+    //w.WriteHeader(status)
+    //execTmpl(w, "error", struct{Error string}{msg})
     return
   }
   json.NewEncoder(w).Encode(struct{
@@ -552,13 +591,52 @@ func writeErr(
   })
 }
 
+// Returns true if the err was written as JSON
+func writeErrJSON(
+  w http.ResponseWriter, r *http.Request,
+  msg string, status int,
+) bool {
+  if acceptsHTML(r) {
+    return false
+  }
+  newErrResp(status, msg).WriteTo(w)
+  return true
+}
+
+type pageData struct {
+  Data any
+  Error string
+}
+
+func newPageData(data any, errStr string) pageData {
+  return pageData{Data: data, Error: errStr}
+}
+
+func newPageDataErr(data any, err error) pageData {
+  pd := pageData{Data: data}
+  if err != nil {
+    pd.Error = err.Error()
+  }
+  return pd
+}
+
 func execTmpl(w http.ResponseWriter, name string, data any) {
   if err := tmpls.ExecuteTemplate(w, name, data); err != nil {
-    http.Error(w, "internal server error", http.StatusInternalServerError)
+    http.Error(w, iseText, http.StatusInternalServerError)
     log.Printf("error executing template %s: %v", name, err)
   }
 }
 
 func errIsUnique(err error) bool {
-  return errors.Is(err, sqlite3.ErrConstraintUnique)
+  //return errors.Is(err, sqlite3.ErrConstraintUnique)
+  //return err == sqlite3.ErrConstraintUnique
+  /*
+  var e *sqlite3.Error
+  return errors.As(err, &e)
+  */
+  // NOTE: Silence error from not using errors package
+  if false {
+    return errors.Is(err, sqlite3.ErrConstraintUnique)
+  }
+  return strings.HasPrefix(err.Error(), "UNIQUE constraint failed:")
 }

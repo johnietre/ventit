@@ -1,7 +1,9 @@
 package server
 
 import (
+  "encoding/json"
   "net/http"
+  "io"
 
   userpkg "github.com/johnietre/ventit/user"
 )
@@ -52,4 +54,28 @@ func (resp JsonResp) withError(errMsg string) JsonResp {
 func (resp JsonResp) withKeyVal(key string, val any) JsonResp {
   resp[key] = val
   return resp
+}
+
+func (resp JsonResp) WriteTo(w io.Writer) (n int64, err error) {
+  if rw, ok := w.(http.ResponseWriter); ok {
+    rw.Header().Set("Content-Type", "application/json")
+  }
+  wc := newWriterCounter(w)
+  err = json.NewEncoder(wc).Encode(resp)
+  return wc.n, err
+}
+
+type writerCounter struct {
+  w io.Writer
+  n int64
+}
+
+func newWriterCounter(w io.Writer) *writerCounter {
+  return &writerCounter{w: w}
+}
+
+func (w writerCounter) Write(p []byte) (n int, err error) {
+  n, err = w.w.Write(p)
+  w.n += int64(n)
+  return
 }

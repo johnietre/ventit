@@ -1,26 +1,32 @@
 {{define "register"}}
+
+{{with .Error}}
+{{template "error" .}}
+{{end}}
+
 <form hx-post="/register" hx-target="body">
   <div>
     <label>Username:</label>
-    <input type="text" name="username">
+    <input type="text" name="username" value="mary_hary">
   </div>
 
   <div>
     <label>Email:</label>
-    <input type="email" name="email">
+    <input type="email" name="email" value="joe@shmo.com">
   </div>
 
   <div>
     <label>Password:</label>
-    <input type="password" name="password">
+    <input type="password" name="password" value="test">
   </div>
 
   <div>
     <label>Confirm Password:</label>
-    <input type="password" name="confirmPassword">
+    <input type="password" name="confirmPassword" value="text">
   </div>
   <button type="submit">Register</button>
   <br>
   <button hx-get="login">Login</button>
 </form>
+
 {{end}}
